@@ -11,6 +11,7 @@ import (
 
 	"github.com/bottlepay/lndsigner/keyring"
 	"github.com/bottlepay/lndsigner/proto"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/hashicorp/vault/api"
 	"github.com/tv42/zbase32"
 	"google.golang.org/grpc"
@@ -35,6 +36,8 @@ type rpcServer struct {
 	cfg *Config
 
 	keyRing *keyring.KeyRing
+
+	policyEngine *policyEngine
 }
 
 // A compile time check to ensure that rpcServer fully implements the
@@ -45,7 +48,7 @@ var _ proto.LightningServer = (*rpcServer)(nil)
 // dependencies are added, this will be an non-functioning RPC server only to
 // be used to register the LightningService with the gRPC server.
 func newRPCServer(cfg *Config, c *api.Logical) *rpcServer {
-	return &rpcServer{
+	server := &rpcServer{
 		cfg:    cfg,
 		client: c,
 		keyRing: keyring.NewKeyRing(
@@ -53,19 +56,29 @@ func newRPCServer(cfg *Config, c *api.Logical) *rpcServer {
 			cfg.NodePubKey,
 			cfg.ActiveNetParams.HDCoinType,
 		),
+		policyEngine: &policyEngine{
+			channels: make(map[wire.OutPoint]*chanInfo),
+		},
 	}
+
+	server.policyEngine.r = server
+
+	return server
 }
 
-// intercept allows the RPC server to intercept requests to ensure that they're
-// authorized by a macaroon signed by the macaroon root key.
+// intercept allows the RPC server to intercept requests to ensure that they
+// comply with all applicable policies.
 func (r *rpcServer) intercept(ctx context.Context, req interface{},
 	info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (
 	interface{}, error) {
 
-	return handler(
-		context.WithValue(ctx, keyRingKey, r.keyRing),
-		req,
-	)
+	resp, err := r.policyEngine.enforcePolicy(ctx, req, handler)
+	if err != nil {
+		signerLog.Debugw("Request denied by policy", "err", err)
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 // RegisterWithGrpcServer registers the rpcServer and any subservers with the

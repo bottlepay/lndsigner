@@ -9,13 +9,17 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
+	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/hashicorp/vault/api"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -64,6 +68,26 @@ func Main(cfg *Config, lisCfg ListenerCfg) error {
 
 	signerClient := vaultClient.Logical()
 
+	listAcctsResp, err := signerClient.ReadWithData(
+		"lndsigner/lnd-nodes/accounts",
+		map[string][]string{
+			"node": []string{cfg.NodePubKey},
+		},
+	)
+	if err != nil {
+		return mkErr("error listing accounts: %v", err)
+	}
+
+	acctList, ok := listAcctsResp.Data["acctList"].(string)
+	if !ok {
+		return mkErr("accounts not returned")
+	}
+
+	accounts, err := getAccounts(acctList)
+	if err != nil {
+		return mkErr("couldn't parse account list: %v", err)
+	}
+
 	serverOpts, err := getTLSConfig(cfg)
 	if err != nil {
 		return mkErr("unable to load TLS credentials: %v", err)
@@ -78,7 +102,7 @@ func Main(cfg *Config, lisCfg ListenerCfg) error {
 		for _, grpcEndpoint := range cfg.RPCListeners {
 			// Start a gRPC server listening for HTTP/2
 			// connections.
-			lis, err := ListenOnAddress(grpcEndpoint)
+			lis, err := listenOnAddress(grpcEndpoint)
 			if err != nil {
 				return mkErr("unable to listen on %s: %v",
 					grpcEndpoint, err)
@@ -101,6 +125,7 @@ func Main(cfg *Config, lisCfg ListenerCfg) error {
 		serverOpts,
 		grpc.ChainUnaryInterceptor(rpcServer.intercept),
 	)
+	rpcServer.policyEngine.accounts = accounts
 
 	// Create the GRPC server with the TLS and interceptor configuration.
 	grpcServer := grpc.NewServer(serverOpts...)
@@ -224,7 +249,73 @@ func parseNetwork(addr net.Addr) string {
 	}
 }
 
-// ListenOnAddress creates a listener that listens on the given address.
-func ListenOnAddress(addr net.Addr) (net.Listener, error) {
+// listenOnAddress creates a listener that listens on the given address.
+func listenOnAddress(addr net.Addr) (net.Listener, error) {
 	return net.Listen(parseNetwork(addr), addr.String())
+}
+
+func getAccounts(acctList string) (map[[3]uint32]*hdkeychain.ExtendedKey,
+	error) {
+
+	accounts := make(map[[3]uint32]*hdkeychain.ExtendedKey)
+
+	elements := make(map[string]interface{})
+
+	err := json.Unmarshal([]byte(acctList), &elements)
+	if err != nil {
+		return nil, err
+	}
+
+	acctElements, ok := elements["accounts"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("no accounts returned in JSON")
+	}
+
+	for _, interEl := range acctElements {
+		acctEl, ok := interEl.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("account is not an object")
+		}
+
+		strKey, ok := acctEl["extended_public_key"].(string)
+		if !ok {
+			return nil, fmt.Errorf("account has no extended pubkey")
+		}
+
+		xPub, err := hdkeychain.NewKeyFromString(strKey)
+		if err != nil {
+			return nil, err
+		}
+
+		strDerPath, ok := acctEl["derivation_path"].(string)
+		if !ok {
+			return nil, fmt.Errorf("account has no derivation path")
+		}
+
+		pathEls := strings.Split(strDerPath, "/")
+		if len(pathEls) != 4 || pathEls[0] != "m" {
+			return nil, fmt.Errorf("invalid derivation path")
+		}
+
+		var derPath [3]uint32
+		for idx, el := range pathEls[1:] {
+			if !strings.HasSuffix(el, "'") {
+				return nil, fmt.Errorf("acct derivation path "+
+					"element %d not hardened", idx)
+			}
+
+			intEl, err := strconv.ParseUint(el[:len(el)-1], 10, 32)
+			if err != nil {
+				return nil, err
+			}
+
+			derPath[idx] = uint32(intEl) +
+				hdkeychain.HardenedKeyStart
+		}
+
+		accounts[derPath] = xPub
+	}
+
+	return accounts, nil
+
 }
