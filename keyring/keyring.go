@@ -84,11 +84,11 @@ type KeyDescriptor struct {
 type KeyRing struct {
 	client *api.Logical
 	node   string
-	coin   int
+	coin   uint32
 }
 
 // NewKeyRing returns a vault-backed key ring.
-func NewKeyRing(client *api.Logical, node string, coin int) *KeyRing {
+func NewKeyRing(client *api.Logical, node string, coin uint32) *KeyRing {
 	return &KeyRing{
 		client: client,
 		node:   node,

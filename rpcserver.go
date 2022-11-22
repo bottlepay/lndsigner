@@ -14,7 +14,6 @@ import (
 	"github.com/hashicorp/vault/api"
 	"github.com/tv42/zbase32"
 	"google.golang.org/grpc"
-	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
 // keyRingKeyStruct is a struct used to look up a keyring passed in a context.
@@ -22,32 +21,6 @@ type keyRingKeyStruct struct{}
 
 var (
 	keyRingKey = keyRingKeyStruct{}
-
-	// nodePermissions is a slice of all entities for using signing
-	// permissions for authorization purposes, all lowercase.
-	nodePermissions = []bakery.Op{
-		{
-			Entity: "onchain",
-			Action: "write",
-		},
-		{
-			Entity: "message",
-			Action: "write",
-		},
-		{
-			Entity: "signer",
-			Action: "generate",
-		},
-	}
-
-	// mainRPCServerPermissions is a mapping of the main RPC server calls
-	// to the permissions they require.
-	mainRPCServerPermissions = map[string][]bakery.Op{
-		"/proto.Lightning/SignMessage": {{
-			Entity: "message",
-			Action: "write",
-		}},
-	}
 )
 
 // rpcServer is a gRPC front end to the signer daemon.
@@ -57,13 +30,11 @@ type rpcServer struct {
 	// alignment.
 	proto.UnimplementedLightningServer
 
-	perms map[string][]bakery.Op
-
 	client *api.Logical
 
-	checker *bakery.Checker
-
 	cfg *Config
+
+	keyRing *keyring.KeyRing
 }
 
 // A compile time check to ensure that rpcServer fully implements the
@@ -73,14 +44,15 @@ var _ proto.LightningServer = (*rpcServer)(nil)
 // newRPCServer creates and returns a new instance of the rpcServer. Before
 // dependencies are added, this will be an non-functioning RPC server only to
 // be used to register the LightningService with the gRPC server.
-func newRPCServer(cfg *Config, c *api.Logical,
-	checker *bakery.Checker) *rpcServer {
-
+func newRPCServer(cfg *Config, c *api.Logical) *rpcServer {
 	return &rpcServer{
-		cfg:     cfg,
-		client:  c,
-		checker: checker,
-		perms:   make(map[string][]bakery.Op),
+		cfg:    cfg,
+		client: c,
+		keyRing: keyring.NewKeyRing(
+			c,
+			cfg.NodePubKey,
+			cfg.ActiveNetParams.HDCoinType,
+		),
 	}
 }
 
@@ -90,15 +62,8 @@ func (r *rpcServer) intercept(ctx context.Context, req interface{},
 	info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (
 	interface{}, error) {
 
-	node, coin, err := r.checkMac(ctx, info.FullMethod)
-	if err != nil {
-		return nil, err
-	}
-
-	keyRing := keyring.NewKeyRing(r.client, node, coin)
-
 	return handler(
-		context.WithValue(ctx, keyRingKey, keyRing),
+		context.WithValue(ctx, keyRingKey, r.keyRing),
 		req,
 	)
 }
@@ -107,17 +72,11 @@ func (r *rpcServer) intercept(ctx context.Context, req interface{},
 // root gRPC server.
 func (r *rpcServer) RegisterWithGrpcServer(grpcServer *grpc.Server) error {
 	// Register the main RPC server.
-	for k, v := range mainRPCServerPermissions {
-		r.perms[k] = v
-	}
 	lnDesc := proto.Lightning_ServiceDesc
 	lnDesc.ServiceName = "lnrpc.Lightning"
 	grpcServer.RegisterService(&lnDesc, r)
 
 	// Register the wallet subserver.
-	for k, v := range walletPermissions {
-		r.perms[k] = v
-	}
 	walletDesc := proto.WalletKit_ServiceDesc
 	walletDesc.ServiceName = "walletrpc.WalletKit"
 	grpcServer.RegisterService(&walletDesc, &walletKit{
@@ -125,9 +84,6 @@ func (r *rpcServer) RegisterWithGrpcServer(grpcServer *grpc.Server) error {
 	})
 
 	// Register the signer subserver.
-	for k, v := range signerPermissions {
-		r.perms[k] = v
-	}
 	signerDesc := proto.Signer_ServiceDesc
 	signerDesc.ServiceName = "signrpc.Signer"
 	grpcServer.RegisterService(&signerDesc, &signerServer{

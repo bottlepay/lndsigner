@@ -7,7 +7,6 @@ package lndsigner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -20,8 +19,6 @@ import (
 	"github.com/lightningnetwork/lnd/cert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"gopkg.in/macaroon-bakery.v2/bakery"
-	"gopkg.in/macaroon-bakery.v2/bakery/checkers"
 )
 
 const (
@@ -106,103 +103,29 @@ func Main(cfg *Config, lisCfg ListenerCfg) error {
 
 	signerClient := vaultClient.Logical()
 
-	nodeListResp, err := signerClient.Read("lndsigner/lnd-nodes")
+	listAcctsResp, err := signerClient.ReadWithData(
+		"lndsigner/lnd-nodes/accounts",
+		map[string][]string{
+			"node": []string{cfg.NodePubKey},
+		},
+	)
 	if err != nil {
-		return mkErr("error getting list of lnd nodes: %v", err)
+		return mkErr("error listing accounts: %v", err)
 	}
 
-	// If we're asked to output a watch-only account list, do it here.
-	if cfg.OutputAccounts != "" {
-		for node := range nodeListResp.Data {
-			listAcctsResp, err := signerClient.ReadWithData(
-				"lndsigner/lnd-nodes/accounts",
-				map[string][]string{
-					"node": []string{node},
-				},
-			)
-			if err != nil {
-				return mkErr("error listing accounts for "+
-					"node %s: %v", node, err)
-			}
-
-			acctList, ok := listAcctsResp.Data["acctList"]
-			if !ok {
-				return mkErr("accounts not returned for "+
-					"node %s", node)
-			}
-
-			err = os.WriteFile(
-				cfg.OutputAccounts+"."+node,
-				[]byte(acctList.(string)),
-				outputFilePermissions,
-			)
-			if err != nil {
-				return mkErr("error writing account list: %v",
-					err)
-			}
-		}
+	acctList, ok := listAcctsResp.Data["acctList"]
+	if !ok {
+		return mkErr("accounts not returned")
 	}
 
-	// Create a new macaroon service.
-	rootKeyStore := &assignedRootKeyStore{
-		key: cfg.macRootKey[:],
-	}
-
-	// Check that we have a valid caveat, we only accept 3 formats.
-	checker := &caveatChecker{}
-
-	bakeryParams := bakery.BakeryParams{
-		RootKeyStore: rootKeyStore,
-		Location:     "lnd",
-		Checker:      checker,
-	}
-
-	bkry := bakery.New(bakeryParams)
-
-	// If we're asked to output a macaroon file, do it here.
-	if cfg.OutputMacaroon != "" {
-		for node, coin := range nodeListResp.Data {
-			caveats := []checkers.Caveat{
-				checkers.Caveat{
-					Condition: checkers.Condition(
-						"node",
-						node,
-					),
-				},
-				checkers.Caveat{
-					Condition: checkers.Condition(
-						"coin",
-						coin.(json.Number).String(),
-					),
-				},
-			}
-
-			mac, err := bkry.Oven.NewMacaroon(
-				ctx,
-				bakery.LatestVersion,
-				caveats,
-				nodePermissions...,
-			)
-			if err != nil {
-				return mkErr("error baking macaroon: %v", err)
-			}
-
-			macBytes, err := mac.M().MarshalBinary()
-			if err != nil {
-				return mkErr("error marshaling macaroon "+
-					"binary: %v", err)
-			}
-
-			err = os.WriteFile(
-				cfg.OutputMacaroon+"."+node,
-				macBytes,
-				outputFilePermissions,
-			)
-			if err != nil {
-				return mkErr("error writing account list: %v",
-					err)
-			}
-		}
+	err = os.WriteFile(
+		cfg.OutputAccounts,
+		[]byte(acctList.(string)),
+		outputFilePermissions,
+	)
+	if err != nil {
+		return mkErr("error writing account list: %v",
+			err)
 	}
 
 	serverOpts, err := getTLSConfig(cfg)
@@ -237,7 +160,7 @@ func Main(cfg *Config, lisCfg ListenerCfg) error {
 
 	// Initialize the rpcServer and add its interceptor to the server
 	// options.
-	rpcServer := newRPCServer(cfg, signerClient, bkry.Checker)
+	rpcServer := newRPCServer(cfg, signerClient)
 	serverOpts = append(
 		serverOpts,
 		grpc.ChainUnaryInterceptor(rpcServer.intercept),

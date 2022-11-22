@@ -84,7 +84,6 @@ type Config struct {
 	TLSDisableAutofill bool          `long:"tlsdisableautofill" description:"Do not include the interface IPs or the system hostname in TLS certificate, use first --tlsextradomain as Common Name instead, if set"`
 	TLSCertDuration    time.Duration `long:"tlscertduration" description:"The duration for which the auto-generated TLS certificate will be valid for"`
 
-	OutputMacaroon string `long:"outputmacaroon" description:"Path to write a signer macaroon for the watch-only node"`
 	OutputAccounts string `long:"outputaccounts" description:"Path to write a JSON file with xpubs for the watch-only node"`
 
 	LogDir         string `long:"logdir" description:"Directory to log output."`
@@ -109,11 +108,8 @@ type Config struct {
 	// ActiveNetParams contains parameters of the target chain.
 	ActiveNetParams chaincfg.Params
 
-	// seed contains the 32-byte wallet seed.
-	seed [32]byte
-
-	// macRootKey contains the 32-byte macaroon root key.
-	macRootKey [32]byte
+	// Node contains the node ID as a 66-character hex string.
+	NodePubKey string `long:"nodepubkey" description:"Node pubkey hex"`
 }
 
 // DefaultConfig returns all default values for the Config struct.
@@ -341,7 +337,7 @@ func ValidateConfig(cfg Config, fileParser, flagParser *flags.Parser) (
 	// for files that point to outside the lnddir.
 	dirs := []string{
 		signerDir, filepath.Dir(cfg.TLSCertPath),
-		filepath.Dir(cfg.TLSKeyPath), filepath.Dir(cfg.OutputMacaroon),
+		filepath.Dir(cfg.TLSKeyPath),
 	}
 	for _, dir := range dirs {
 		if err := makeDirectory(dir); err != nil {
@@ -372,14 +368,6 @@ func ValidateConfig(cfg Config, fileParser, flagParser *flags.Parser) (
 	}
 
 	cfg.OutputAccounts = CleanAndExpandPath(cfg.OutputAccounts)
-
-	// Get the macaroon root key from the environment.
-	cfg.macRootKey, err = get32BytesFromEnv("SIGNER_MAC_ROOT_KEY")
-	if err != nil {
-		return nil, err
-	}
-
-	cfg.OutputMacaroon = CleanAndExpandPath(cfg.OutputMacaroon)
 
 	// All good, return the sanitized result.
 	return &cfg, nil
