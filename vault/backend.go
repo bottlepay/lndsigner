@@ -23,6 +23,10 @@ import (
 	"github.com/hashicorp/vault/sdk/logical"
 )
 
+const (
+	seedLen = 16 // Matches LND usage
+)
+
 type listedAccount struct {
 	Name             string `json:"name"`
 	AddressType      string `json:"address_type"`
@@ -31,6 +35,30 @@ type listedAccount struct {
 	ExternalKeyCount int    `json:"external_key_count"`
 	InternalKeyCount int    `json:"internal_key_count"`
 	WatchOnly        bool   `json:"watch_only"`
+}
+
+type backend struct {
+	*framework.Backend
+}
+
+func (b *backend) importNode(ctx context.Context, req *logical.Request,
+	data *framework.FieldData) (*logical.Response, error) {
+
+	strNode := data.Get("node").(string)
+	strNet := data.Get("network").(string)
+
+	seed, err := seedFromSeedAndPassPhrases(
+		data.Get("seedphrase").(string),
+		data.Get("passphrase").(string),
+	)
+	if err != nil {
+		b.Logger().Error("Failed to get seed from seed and "+
+			"pass phrases", "error", err)
+		return nil, err
+	}
+	defer zero(seed)
+
+	return b.newNode(ctx, req.Storage, seed, strNet, strNode)
 }
 
 func (b *backend) listAccounts(ctx context.Context, req *logical.Request,
@@ -453,16 +481,16 @@ func (b *backend) getNode(ctx context.Context, storage logical.Storage,
 		return nil, nil, errors.New("node not found")
 	}
 
-	if len(entry.Value) <= hdkeychain.RecommendedSeedLen {
+	if len(entry.Value) <= seedLen {
 		return nil, nil, errors.New("got invalid seed from storage")
 	}
 
-	net, err := GetNet(string(entry.Value[hdkeychain.RecommendedSeedLen:]))
+	net, err := GetNet(string(entry.Value[seedLen:]))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return entry.Value[:hdkeychain.RecommendedSeedLen], net, nil
+	return entry.Value[:seedLen], net, nil
 }
 
 func (b *backend) listNodes(ctx context.Context, req *logical.Request,
@@ -502,24 +530,30 @@ func (b *backend) createNode(ctx context.Context, req *logical.Request,
 	data *framework.FieldData) (*logical.Response, error) {
 
 	strNet := data.Get("network").(string)
-	net, err := GetNet(strNet)
-	if err != nil {
-		b.Logger().Error("Failed to parse network", "error", err)
-		return nil, err
-	}
 
 	var seed []byte
 	defer zero(seed)
 
-	err = hdkeychain.ErrUnusableSeed
+	err := hdkeychain.ErrUnusableSeed
 	for err == hdkeychain.ErrUnusableSeed {
-		seed, err = hdkeychain.GenerateSeed(
-			hdkeychain.RecommendedSeedLen,
-		)
+		seed, err = hdkeychain.GenerateSeed(seedLen)
 	}
 	if err != nil {
 		b.Logger().Error("Failed to generate new LND seed",
 			"error", err)
+		return nil, err
+	}
+
+	return b.newNode(ctx, req.Storage, seed, strNet, "")
+}
+
+func (b *backend) newNode(ctx context.Context, storage logical.Storage,
+	seed []byte, strNet, reqKey string) (*logical.Response, error) {
+
+	net, err := GetNet(strNet)
+	if err != nil {
+		b.Logger().Error("Failed to parse network", "error", err,
+			"network", strNet)
 		return nil, err
 	}
 
@@ -538,27 +572,40 @@ func (b *backend) createNode(ctx context.Context, req *logical.Request,
 
 	pubKeyBytes, err := extKeyToPubBytes(nodePubKey)
 	if err != nil {
-		b.Logger().Error("createNode: Failed to get pubkey bytes",
+		b.Logger().Error("newNode: Failed to get pubkey bytes",
 			"error", err)
 		return nil, err
 	}
 
 	strPubKey := hex.EncodeToString(pubKeyBytes)
+
+	if reqKey != "" && strPubKey != reqKey {
+		b.Logger().Error("newNode: node pubkey mismatch")
+		return nil, ErrNodePubkeyMismatch
+	}
+
 	nodePath := "lnd-nodes/" + strPubKey
 
+	obj, err := storage.Get(ctx, nodePath)
+	if err == nil && obj != nil {
+		b.Logger().Error("newNode: node already exists",
+			"node", strPubKey)
+		return nil, ErrNodeAlreadyExists
+	}
+
 	seed = append(seed, []byte(strNet)...)
-	err = req.Storage.Put(ctx, &logical.StorageEntry{
+	err = storage.Put(ctx, &logical.StorageEntry{
 		Key:      nodePath,
 		Value:    seed,
 		SealWrap: true,
 	})
 	if err != nil {
 		b.Logger().Error("Failed to save seed for node",
-			"error", err)
+			"node", strPubKey, "error", err)
 		return nil, err
 	}
 
-	b.Logger().Info("Wrote new LND node seed", "pubkey", strPubKey)
+	b.Logger().Info("Wrote new LND seed", "node", strPubKey)
 
 	return &logical.Response{
 		Data: map[string]interface{}{
@@ -585,7 +632,7 @@ func GetNet(strNet string) (*chaincfg.Params, error) {
 		return &chaincfg.RegressionNetParams, nil
 
 	default:
-		return nil, errors.New("invalid network specified: " + strNet)
+		return nil, ErrInvalidNetwork
 	}
 }
 
