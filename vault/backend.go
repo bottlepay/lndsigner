@@ -202,7 +202,7 @@ func (b *backend) ecdh(ctx context.Context, req *logical.Request,
 	if len(peerPubHex) != 2*btcec.PubKeyBytesLenCompressed {
 		b.Logger().Error("Peer pubkey is wrong length",
 			"peer", peerPubHex)
-		return nil, errors.New("invalid peer pubkey")
+		return nil, ErrInvalidPeerPubkey
 	}
 
 	peerPubBytes, err := hex.DecodeString(peerPubHex)
@@ -324,7 +324,7 @@ func (b *backend) deriveAndSign(ctx context.Context, req *logical.Request,
 
 	if numTweaks > 1 {
 		b.Logger().Error("Both single and double tweak specified")
-		return nil, errors.New("both single and double tweak specified")
+		return nil, ErrTooManyTweaks
 	}
 
 	strNode := data.Get("node").(string)
@@ -468,7 +468,7 @@ func (b *backend) getNode(ctx context.Context, storage logical.Storage,
 	id string) ([]byte, *chaincfg.Params, error) {
 
 	if len(id) != 2*btcec.PubKeyBytesLenCompressed {
-		return nil, nil, errors.New("invalid node id")
+		return nil, nil, ErrInvalidNodeID
 	}
 
 	nodePath := "lnd-nodes/" + id
@@ -478,11 +478,11 @@ func (b *backend) getNode(ctx context.Context, storage logical.Storage,
 	}
 
 	if entry == nil {
-		return nil, nil, errors.New("node not found")
+		return nil, nil, ErrNodeNotFound
 	}
 
 	if len(entry.Value) <= seedLen {
-		return nil, nil, errors.New("got invalid seed from storage")
+		return nil, nil, ErrInvalidSeedFromStorage
 	}
 
 	net, err := GetNet(string(entry.Value[seedLen:]))

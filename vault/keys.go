@@ -9,8 +9,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -90,8 +88,7 @@ func checkRequiredPubKey(derived *hdkeychain.ExtendedKey,
 	}
 
 	if !bytes.Equal(requiredBytes, pubKeyBytes) {
-		return fmt.Errorf("pubkey mismatch: wanted %x, got %x",
-			requiredBytes, pubKeyBytes)
+		return ErrPubkeyMismatch
 	}
 
 	return nil
@@ -101,25 +98,22 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 	derivationPath []int) (*hdkeychain.ExtendedKey, error) {
 
 	if len(derivationPath) != 5 {
-		return nil, errors.New("derivation path not 5 elements")
+		return nil, ErrWrongLengthDerivationPath
 	}
 
 	derPath := make([]uint32, 5)
 
 	for idx, element := range derivationPath {
 		if element < 0 {
-			return nil, errors.New("negative derivation path " +
-				"element")
+			return nil, ErrNegativeElement
 		}
 
 		if element > math.MaxUint32 {
-			return nil, errors.New("derivation path element > " +
-				"MaxUint32")
+			return nil, ErrElementOverflow
 		}
 
 		if idx < 3 && element < hdkeychain.HardenedKeyStart {
-			return nil, fmt.Errorf("element at index %d is not "+
-				"hardened", idx)
+			return nil, ErrElementNotHardened
 		}
 
 		derPath[idx] = uint32(element)
@@ -136,7 +130,7 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[0],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving purpose")
+		return nil, err
 	}
 	defer purposeKey.Zero()
 
@@ -145,7 +139,7 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[1],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving coin type")
+		return nil, err
 	}
 	defer coinTypeKey.Zero()
 
@@ -154,21 +148,21 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[2],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving account")
+		return nil, err
 	}
 	defer accountKey.Zero()
 
 	// Derive branch.
 	branchKey, err := accountKey.DeriveNonStandard(derPath[3])
 	if err != nil {
-		return nil, errors.New("error deriving branch")
+		return nil, err
 	}
 	defer branchKey.Zero()
 
 	// Derive index.
 	indexKey, err := branchKey.DeriveNonStandard(derPath[4])
 	if err != nil {
-		return nil, errors.New("error deriving index")
+		return nil, err
 	}
 
 	return indexKey, nil
