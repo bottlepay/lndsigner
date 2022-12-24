@@ -9,7 +9,7 @@
 - [x] sign messages for network announcements
 - [x] derive shared keys for peer connections
 - [x] sign PSBTs for on-chain transactions, channel openings/closes, HTLC updates, etc.
-- [ ] run itests
+- [x] run itests
 - [ ] do automated builds
 - [ ] do reproducible builds
 - [ ] perform musig2 ops
@@ -159,3 +159,16 @@ node    03c7926302ac72f51ef009dc169561734414b3c6bfd9fb0dc42cac93101c3c25bf
 ```
 
 Now you can use the imported key as before.
+
+## Testing
+You can run the unit tests like so:
+
+```
+lndsigner$ go test -v -race -count=1 -cover ./...
+```
+
+To run the integration tests, first you need to build the binaries as above. Then use the command:
+
+```
+lndsigner$ go test -v -race -count=1 -cover -tags="itest" .
+```
