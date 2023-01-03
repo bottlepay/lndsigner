@@ -79,8 +79,6 @@ func TestIntegration(t *testing.T) {
 	pluginPath, err := exec.LookPath("vault-plugin-lndsigner")
 	require.NoError(t, err)
 
-	fmt.Println(bitcoindPath, bitcoincliPath, lndPath, lncliPath)
-
 	tmpRoot, err := os.MkdirTemp("", "lndsigner-itest")
 	require.NoError(t, err)
 	defer os.RemoveAll(tmpRoot)
@@ -227,7 +225,7 @@ func TestIntegration(t *testing.T) {
 	defer killProc(t, bitcoindCmd, bitcoindErrPipe)
 
 	// TODO(aakselrod): eliminate this
-	time.Sleep(time.Second)
+	time.Sleep(3 * time.Second)
 
 	bitcoinCli := func(args ...string) {
 		bitcoinCliCmd := exec.CommandContext(ctx, bitcoincliPath,
@@ -260,9 +258,10 @@ func TestIntegration(t *testing.T) {
 			vault:     client,
 		},
 		&lndHarness{
-			lnddir:    path.Join(tmpRoot, "lnd2"),
-			lncliPath: lncliPath,
-			vault:     client,
+			lnddir:     path.Join(tmpRoot, "lnd2"),
+			lncliPath:  lncliPath,
+			vault:      client,
+			unixSocket: true,
 		},
 		&lndHarness{
 			lnddir:    path.Join(tmpRoot, "lnd3"),
@@ -296,9 +295,9 @@ func TestIntegration(t *testing.T) {
 		bitcoinCli("-named", "sendtoaddress", "address="+address,
 			"amount=1", "fee_rate=25")
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		bitcoinCli("-generate")
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 
 		t.Run(lndPubKeys[i]+"/"+"p2wkhaddress", func(t *testing.T) {
 			resp = lnd.Lncli(t, ctx, "newaddress", "p2wkh")
@@ -311,9 +310,9 @@ func TestIntegration(t *testing.T) {
 			require.Equal(t, 64, len(resp["txid"].(string)))
 		})
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		bitcoinCli("-generate")
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 
 		t.Run(lndPubKeys[i]+"/"+"np2wkhaddress", func(t *testing.T) {
 			resp = lnd.Lncli(t, ctx, "newaddress", "np2wkh")
@@ -326,9 +325,9 @@ func TestIntegration(t *testing.T) {
 			require.Equal(t, 64, len(resp["txid"].(string)))
 		})
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		bitcoinCli("-generate")
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 
 		t.Run(lndPubKeys[i]+"/"+"np2wkhspend", func(t *testing.T) {
 			resp = lnd.Lncli(t, ctx, "sendcoins", "--sweepall",
@@ -336,9 +335,9 @@ func TestIntegration(t *testing.T) {
 			require.Equal(t, 64, len(resp["txid"].(string)))
 		})
 
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		bitcoinCli("-generate")
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	t.Run("connect lnd1 to lnd2", func(t *testing.T) {
@@ -363,15 +362,15 @@ func TestIntegration(t *testing.T) {
 		require.Equal(t, 64, len(resp["funding_txid"].(string)))
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	bitcoinCli("-generate", "5")
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	bitcoinCli("-generate")
-	time.Sleep(time.Second)
+	time.Sleep(3 * time.Second)
 
 	var invoice string
 
-	t.Run("get invoice from lnd1", func(t *testing.T) {
+	t.Run("get invoice from lnd1 for lnd2", func(t *testing.T) {
 		resp = lnds[0].Lncli(t, ctx, "addinvoice", "5000")
 		invoice = resp["payment_request"].(string)
 	})
@@ -380,12 +379,59 @@ func TestIntegration(t *testing.T) {
 		resp = lnds[1].Lncli(t, ctx, "payinvoice", "-f", invoice)
 	})
 
+	t.Run("get invoice from lnd2 for lnd1", func(t *testing.T) {
+		resp = lnds[1].Lncli(t, ctx, "addinvoice", "5000")
+		invoice = resp["payment_request"].(string)
+	})
+
+	t.Run("pay invoice from lnd1 to lnd2", func(t *testing.T) {
+		resp = lnds[0].Lncli(t, ctx, "payinvoice", "-f", invoice)
+	})
+
+	t.Run("get invoice from lnd3 for lnd2", func(t *testing.T) {
+		resp = lnds[2].Lncli(t, ctx, "addinvoice", "5000")
+		invoice = resp["payment_request"].(string)
+	})
+
+	t.Run("pay invoice from lnd2 to lnd3", func(t *testing.T) {
+		resp = lnds[1].Lncli(t, ctx, "payinvoice", "-f", invoice)
+	})
+
+	t.Run("get invoice from lnd2 for lnd3", func(t *testing.T) {
+		resp = lnds[1].Lncli(t, ctx, "addinvoice", "5000")
+		invoice = resp["payment_request"].(string)
+	})
+
+	t.Run("pay invoice from lnd3 to lnd2", func(t *testing.T) {
+		resp = lnds[2].Lncli(t, ctx, "payinvoice", "-f", invoice)
+	})
+
+	t.Run("get invoice from lnd3 for lnd1", func(t *testing.T) {
+		resp = lnds[2].Lncli(t, ctx, "addinvoice", "5000")
+		invoice = resp["payment_request"].(string)
+	})
+
+	t.Run("pay invoice from lnd1 to lnd3", func(t *testing.T) {
+		resp = lnds[0].Lncli(t, ctx, "payinvoice", "-f", invoice)
+	})
+
+	t.Run("get invoice from lnd1 for lnd3", func(t *testing.T) {
+		resp = lnds[0].Lncli(t, ctx, "addinvoice", "5000")
+		invoice = resp["payment_request"].(string)
+	})
+
+	t.Run("pay invoice from lnd3 to lnd1", func(t *testing.T) {
+		resp = lnds[2].Lncli(t, ctx, "payinvoice", "-f", invoice)
+	})
+
 }
 
 type lndHarness struct {
 	lnddir    string
 	lncliPath string
 	vault     *api.Logical
+
+	unixSocket bool
 
 	rpc     string
 	p2p     string
@@ -398,7 +444,15 @@ func (l *lndHarness) Start(t *testing.T, ctx context.Context, lndPath,
 
 	t.Helper()
 
-	signerAddr := newPort()
+	var signerAddr net.Addr = newPort()
+
+	if l.unixSocket {
+		signerAddr = &net.UnixAddr{
+			Name: path.Join(l.lnddir, "signer.socket"),
+			Net:  "unix",
+		}
+	}
+
 	signerConfig := &lndsigner.Config{
 		SignerDir:       "./testdata",
 		TLSCertPath:     "./testdata/tls.cert",
@@ -446,6 +500,11 @@ func (l *lndHarness) Start(t *testing.T, ctx context.Context, lndPath,
 	l.rpc = newPortString()
 	l.p2p = newPortString()
 
+	strSignerAddr := signerAddr.String()
+	if l.unixSocket {
+		strSignerAddr = "unix://" + strSignerAddr
+	}
+
 	l.cmd = exec.CommandContext(ctx, lndPath, "--lnddir="+l.lnddir,
 		"--norest", "--listen="+l.p2p, "--rpclisten="+l.rpc,
 		"--trickledelay=10", "--bitcoin.active", "--bitcoin.regtest",
@@ -455,7 +514,7 @@ func (l *lndHarness) Start(t *testing.T, ctx context.Context, lndPath,
 		"--bitcoind.zmqpubrawblock=tcp://"+zmqPubRawBlock,
 		"--bitcoind.zmqpubrawtx=tcp://"+zmqPubRawTx,
 		"--remotesigner.enable",
-		"--remotesigner.rpchost="+signerAddr.String(),
+		"--remotesigner.rpchost="+strSignerAddr,
 		"--remotesigner.tlscertpath=./testdata/tls.cert",
 		"--remotesigner.macaroonpath=./testdata/signer.custom.macaroon",
 	)
@@ -469,7 +528,7 @@ func (l *lndHarness) Start(t *testing.T, ctx context.Context, lndPath,
 	t.Logf("Running lnd %s", idPubKey)
 
 	// TODO(aakselrod): eliminate this
-	time.Sleep(1 * time.Second)
+	time.Sleep(3 * time.Second)
 
 	// Initialize with the accounts information.
 	tlsCreds, err := credentials.NewClientTLSFromFile(
