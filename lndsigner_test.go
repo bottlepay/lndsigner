@@ -424,6 +424,46 @@ func TestIntegration(t *testing.T) {
 		resp = lnds[2].Lncli(t, ctx, "payinvoice", "-f", invoice)
 	})
 
+	var message, sig string
+
+	t.Run("sign message from lnd1", func(t *testing.T) {
+		message = "test from lnd1"
+		resp = lnds[0].Lncli(t, ctx, "signmessage", message)
+		sig = resp["signature"].(string)
+	})
+
+	t.Run("verify signed message from lnd1", func(t *testing.T) {
+		resp = lnds[1].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+		resp = lnds[2].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+	})
+
+	t.Run("sign message from lnd2", func(t *testing.T) {
+		message = "test from lnd2"
+		resp = lnds[1].Lncli(t, ctx, "signmessage", message)
+		sig = resp["signature"].(string)
+	})
+
+	t.Run("verify signed message from lnd2", func(t *testing.T) {
+		resp = lnds[0].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+		resp = lnds[2].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+	})
+
+	t.Run("sign message from lnd3", func(t *testing.T) {
+		message = "test from lnd3"
+		resp = lnds[2].Lncli(t, ctx, "signmessage", message)
+		sig = resp["signature"].(string)
+	})
+
+	t.Run("verify signed message from lnd3", func(t *testing.T) {
+		resp = lnds[0].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+		resp = lnds[1].Lncli(t, ctx, "verifymessage", message, sig)
+		require.True(t, resp["valid"].(bool))
+	})
 }
 
 type lndHarness struct {
