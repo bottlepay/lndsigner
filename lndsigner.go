@@ -9,10 +9,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -227,4 +230,61 @@ func parseNetwork(addr net.Addr) string {
 // ListenOnAddress creates a listener that listens on the given address.
 func ListenOnAddress(addr net.Addr) (net.Listener, error) {
 	return net.Listen(parseNetwork(addr), addr.String())
+}
+
+func GetAccounts(acctList string) (map[[3]uint32]string, error) {
+	accounts := make(map[[3]uint32]string)
+
+	elements := make(map[string]interface{})
+
+	err := json.Unmarshal([]byte(acctList), &elements)
+	if err != nil {
+		return nil, err
+	}
+
+	acctElements, ok := elements["accounts"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("no accounts returned in JSON")
+	}
+
+	for _, interEl := range acctElements {
+		acctEl, ok := interEl.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("account is not an object")
+		}
+
+		strKey, ok := acctEl["extended_public_key"].(string)
+		if !ok {
+			return nil, fmt.Errorf("account has no extended pubkey")
+		}
+
+		strDerPath, ok := acctEl["derivation_path"].(string)
+		if !ok {
+			return nil, fmt.Errorf("account has no derivation path")
+		}
+
+		pathEls := strings.Split(strDerPath, "/")
+		if len(pathEls) != 4 || pathEls[0] != "m" {
+			return nil, fmt.Errorf("invalid derivation path")
+		}
+
+		var derPath [3]uint32
+		for idx, el := range pathEls[1:] {
+			if !strings.HasSuffix(el, "'") {
+				return nil, fmt.Errorf("acct derivation path "+
+					"element %d not hardened", idx)
+			}
+
+			intEl, err := strconv.ParseUint(el[:len(el)-1], 10, 32)
+			if err != nil {
+				return nil, err
+			}
+
+			derPath[idx] = uint32(intEl)
+		}
+
+		accounts[derPath] = strKey
+	}
+
+	return accounts, nil
 }

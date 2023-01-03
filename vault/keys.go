@@ -9,13 +9,56 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
-	"fmt"
 	"math"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcutil/hdkeychain"
 	"github.com/btcsuite/btcd/chaincfg"
+)
+
+const (
+	// MaxAcctID is the number of accounts/key families to create on
+	// initialization.
+	MaxAcctID = 255
+
+	Bip0043purpose = 1017
+	NodeKeyAcct    = 6
+)
+
+var (
+	// defaultPurposes is a list of non-LN(1017) purposes for which we
+	// should create a m/purpose'/0'/0' account as well as their default
+	// address types.
+	defaultPurposes = []struct {
+		purpose   uint32
+		addrType  string
+		hdVersion [2][4]byte
+	}{
+		{
+			purpose:  49,
+			addrType: "HYBRID_NESTED_WITNESS_PUBKEY_HASH",
+			hdVersion: [2][4]byte{
+				[4]byte{0x04, 0x9d, 0x7c, 0xb2}, // ypub
+				[4]byte{0x04, 0x4a, 0x52, 0x62}, // upub
+			},
+		},
+		{
+			purpose:  84,
+			addrType: "WITNESS_PUBKEY_HASH",
+			hdVersion: [2][4]byte{
+				[4]byte{0x04, 0xb2, 0x47, 0x46}, // zpub
+				[4]byte{0x04, 0x5f, 0x1c, 0xf6}, // vpub
+			},
+		},
+		{
+			purpose:  86,
+			addrType: "TAPROOT_PUBKEY",
+			hdVersion: [2][4]byte{
+				[4]byte{0x04, 0x88, 0xb2, 0x1e}, // xpub
+				[4]byte{0x04, 0x35, 0x87, 0xcf}, // tpub
+			},
+		},
+	}
 )
 
 func extKeyToPubBytes(key *hdkeychain.ExtendedKey) ([]byte, error) {
@@ -45,8 +88,7 @@ func checkRequiredPubKey(derived *hdkeychain.ExtendedKey,
 	}
 
 	if !bytes.Equal(requiredBytes, pubKeyBytes) {
-		return fmt.Errorf("pubkey mismatch: wanted %x, got %x",
-			requiredBytes, pubKeyBytes)
+		return ErrPubkeyMismatch
 	}
 
 	return nil
@@ -56,25 +98,22 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 	derivationPath []int) (*hdkeychain.ExtendedKey, error) {
 
 	if len(derivationPath) != 5 {
-		return nil, errors.New("derivation path not 5 elements")
+		return nil, ErrWrongLengthDerivationPath
 	}
 
 	derPath := make([]uint32, 5)
 
 	for idx, element := range derivationPath {
 		if element < 0 {
-			return nil, errors.New("negative derivation path " +
-				"element")
+			return nil, ErrNegativeElement
 		}
 
 		if element > math.MaxUint32 {
-			return nil, errors.New("derivation path element > " +
-				"MaxUint32")
+			return nil, ErrElementOverflow
 		}
 
 		if idx < 3 && element < hdkeychain.HardenedKeyStart {
-			return nil, fmt.Errorf("element at index %d is not "+
-				"hardened", idx)
+			return nil, ErrElementNotHardened
 		}
 
 		derPath[idx] = uint32(element)
@@ -91,7 +130,7 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[0],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving purpose")
+		return nil, err
 	}
 	defer purposeKey.Zero()
 
@@ -100,7 +139,7 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[1],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving coin type")
+		return nil, err
 	}
 	defer coinTypeKey.Zero()
 
@@ -109,21 +148,21 @@ func derivePrivKey(seed []byte, net *chaincfg.Params,
 		derPath[2],
 	)
 	if err != nil {
-		return nil, errors.New("error deriving account")
+		return nil, err
 	}
 	defer accountKey.Zero()
 
 	// Derive branch.
 	branchKey, err := accountKey.DeriveNonStandard(derPath[3])
 	if err != nil {
-		return nil, errors.New("error deriving branch")
+		return nil, err
 	}
 	defer branchKey.Zero()
 
 	// Derive index.
 	indexKey, err := branchKey.DeriveNonStandard(derPath[4])
 	if err != nil {
-		return nil, errors.New("error deriving index")
+		return nil, err
 	}
 
 	return indexKey, nil
